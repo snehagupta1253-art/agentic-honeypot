@@ -151,7 +151,7 @@ def receive_scam(
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
-    # ---- Normalize input (THIS FIXES TESTER) ----
+    # Normalize input (supports both formats)
     if hasattr(data, "conversation_id"):
         conversation_id = data.conversation_id
         message_text = data.message
@@ -172,6 +172,7 @@ def receive_scam(
     if len(convo["messages"]) >= MAX_TURNS:
         raise HTTPException(status_code=429, detail="Max conversation turns exceeded")
 
+    # Add scammer message
     convo["messages"].append({
         "role": "scammer",
         "message": message_text,
@@ -186,7 +187,7 @@ def receive_scam(
         "scam_confidence": detection["confidence"],
         "detection_reasons": detection["reasons"],
         "engagement_metrics": {
-            "turns": len(convo["messages"]),
+            "turns": 0,  # will be updated later
             "engagement_duration_seconds": int(
                 (now - convo["start_time"]).total_seconds()
             )
@@ -220,5 +221,8 @@ def receive_scam(
         }
 
         background_tasks.add_task(send_guvi_callback, guvi_payload)
+
+    # ✅ FINAL TURN COUNT (correct & clear)
+    response["engagement_metrics"]["turns"] = len(convo["messages"])
 
     return response
