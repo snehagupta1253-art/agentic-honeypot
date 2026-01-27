@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
 from pydantic import BaseModel
+from typing import Union, Optional
 import re
 from datetime import datetime
 import os
@@ -14,11 +15,23 @@ API_KEY = os.getenv("API_KEY", "my-secret-key-123")
 MAX_TURNS = 20
 
 # =============================
-# REQUEST MODEL
+# REQUEST MODELS
 # =============================
 class ScamRequest(BaseModel):
     conversation_id: str
     message: str
+
+
+class GuviMessage(BaseModel):
+    sender: str
+    text: str
+    timestamp: Optional[str] = None
+
+
+class GuviRequest(BaseModel):
+    sessionId: str
+    message: GuviMessage
+    conversationHistory: Optional[list] = []
 
 # =============================
 # IN-MEMORY STORAGE
@@ -112,11 +125,10 @@ def send_guvi_callback(payload):
             timeout=5
         )
     except Exception:
-        # Never block or crash main API
         pass
 
 # =============================
-# ROOT ENDPOINT
+# ROOT
 # =============================
 @app.get("/")
 def root():
@@ -131,16 +143,22 @@ def root():
 # =============================
 @app.post("/scam")
 def receive_scam(
-    data: ScamRequest,
+    data: Union[ScamRequest, GuviRequest],
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(None)
 ):
-    # API Key validation
+    # API key check
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
-    conversation_id = data.conversation_id
-    message = data.message
+    # ---- Normalize input (THIS FIXES TESTER) ----
+    if hasattr(data, "conversation_id"):
+        conversation_id = data.conversation_id
+        message_text = data.message
+    else:
+        conversation_id = data.sessionId
+        message_text = data.message.text
+
     now = datetime.utcnow()
 
     if conversation_id not in conversation_store:
@@ -154,14 +172,13 @@ def receive_scam(
     if len(convo["messages"]) >= MAX_TURNS:
         raise HTTPException(status_code=429, detail="Max conversation turns exceeded")
 
-    # Store scammer message
     convo["messages"].append({
         "role": "scammer",
-        "message": message,
+        "message": message_text,
         "time": now
     })
 
-    detection = detect_scam(message)
+    detection = detect_scam(message_text)
 
     response = {
         "conversation_id": conversation_id,
@@ -184,7 +201,7 @@ def receive_scam(
     }
 
     if detection["is_scam"]:
-        reply = agent_reply(message, convo["messages"])
+        reply = agent_reply(message_text, convo["messages"])
         convo["messages"].append({
             "role": "agent",
             "message": reply,
@@ -192,9 +209,8 @@ def receive_scam(
         })
 
         response["agent_reply"] = reply
-        response["extracted_intelligence"] = extract_intelligence(message)
+        response["extracted_intelligence"] = extract_intelligence(message_text)
 
-        # GUVI callback payload
         guvi_payload = {
             "sessionId": conversation_id,
             "scamDetected": True,
@@ -203,7 +219,6 @@ def receive_scam(
             "agentNotes": reply
         }
 
-        # Send callback in background (NON-BLOCKING)
         background_tasks.add_task(send_guvi_callback, guvi_payload)
 
     return response
