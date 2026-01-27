@@ -47,9 +47,10 @@ This solution is built as a **public REST API**, secured using an API key, and d
 ### Base URL
 https://agentic-honeypot-2pn5.onrender.com
 ### Required Headers
-x-api-key: my-secret-key-123
+```text
+x-api-key:  <YOUR_API_KEY>
 Content-Type: application/json
-
+```
 
 ---
 
@@ -59,42 +60,60 @@ Content-Type: application/json
   "conversation_id": "demo-session",
   "message": "Your bank account is suspended. Send money to helpdesk@upi or visit https://secure-bank-login.com"
 }
+```
+
 📤 Sample Response
+```json
 {
   "scam_detected": true,
+  "scam_confidence": 0.9,
+  "detection_reasons": ["bank", "account", "upi", "suspended"],
   "agent_reply": "Hello, I just received this message. Can you explain what happened?",
   "engagement_metrics": {
     "turns": 1,
     "engagement_duration_seconds": 0
   },
   "extracted_intelligence": {
+    "bank_accounts": [],
     "upi_ids": ["helpdesk@upi"],
-    "phishing_urls": ["https://secure-bank-login.com"]
+    "phishing_urls": ["https://secure-bank-login.com"],
+    "intelligence_confidence": 0.6
   }
 }
+
 ```
 
-🔄 Multi-Turn Support
+## 🔄 Multi-Turn Support
 The system supports ongoing conversations using a shared conversation_id.
 Engagement metrics and extracted intelligence are updated incrementally as the conversation progresses.
 
-🛡️ Security
+## 🛡️ Security
 API access is secured using a required API key
-
 Unauthorized requests are rejected
-
 Designed for stable and low-latency responses
 
-⚖️ Ethical Considerations
+## 📡 Mandatory Evaluation Callback (GUVI)
+
+As required by the challenge, once scam intent is confirmed and the agent completes sufficient engagement, the system sends the final extracted intelligence to the GUVI evaluation endpoint.
+
+**Callback Endpoint**
+```text
+POST https://hackathon.guvi.in/api/updateHoneyPotFinalResult
+```
+This callback includes:
+- sessionId
+- scamDetected
+- totalMessagesExchanged
+- extractedIntelligence
+- agentNotes
+
+## ⚖️ Ethical Considerations
 No impersonation of real individuals
-
 No harassment or illegal instructions
-
 No hallucinated or fabricated intelligence
-
 Responsible handling of extracted data
 
-🛠️ Tech Stack
+## 🛠️ Tech Stack
 Language: Python 3
 
 Framework: FastAPI
@@ -103,6 +122,6 @@ Server: Uvicorn
 
 Deployment: Render (Public API)
 
-👥 Team
+## 👥 Team
 This is a group project submission for the Agentic Honey-Pot for Scam Detection & Intelligence Extraction challenge.
 
