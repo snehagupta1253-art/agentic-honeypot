@@ -82,7 +82,23 @@ Content-Type: application/json
 }
 
 ```
-
+🔁 Sample Request – Format 2
+```json
+{
+  "sessionId": "elite-demo-001",
+  "message": {
+    "sender": "scammer",
+    "text": "Your bank account is suspended due to suspicious activity. Send money to 987654321098 or pay via helpdesk@upi immediately. Verify here: https://secure-fakebank.com/login",
+    "timestamp": "2026-01-21T10:15:30Z"
+  },
+  "conversationHistory": [],
+  "metadata": {
+    "channel": "SMS",
+    "language": "English",
+    "locale": "IN"
+  }
+}
+```
 ## 🔄 Multi-Turn Support
 The system supports ongoing conversations using a shared conversation_id.
 Engagement metrics and extracted intelligence are updated incrementally as the conversation progresses.
