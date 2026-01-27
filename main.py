@@ -1,27 +1,23 @@
 from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 import re
 from datetime import datetime
-import requests
+import os
 
 app = FastAPI(title="Agentic HoneyPot API", version="1.0")
 
 # =============================
-# ROOT ENDPOINT
-# =============================
-@app.get("/")
-def root():
-    return {
-        "status": "Agentic Honey-Pot API is running",
-        "docs": "/docs",
-        "endpoint": "/scam"
-    }
-
-# =============================
 # CONFIG
 # =============================
-API_KEY = "my-secret-key-123"
+API_KEY = os.getenv("API_KEY", "my-secret-key-123")
 MAX_TURNS = 20
-GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+
+# =============================
+# REQUEST MODEL (IMPORTANT)
+# =============================
+class ScamRequest(BaseModel):
+    conversation_id: str
+    message: str
 
 # =============================
 # IN-MEMORY STORAGE
@@ -71,15 +67,15 @@ def agent_reply(message: str, history: list) -> str:
         return "Hello, I just received this message. Can you explain what happened?"
 
     if "account" in msg:
-        return "Which bank account is this? I have multiple accounts."
-    if "upi" in msg:
-        return "Okay, I use UPI. Please share the exact UPI ID."
+        return "Which bank account is this related to?"
+    if "upi" in msg or "payment" in msg:
+        return "Please share the exact UPI ID."
     if "link" in msg:
         return "I am not comfortable clicking links. Is there another way?"
     if "otp" in msg:
         return "I received multiple OTPs. Which one do you need?"
 
-    return "I am confused. Please guide me step by step."
+    return "Please guide me step by step."
 
 # =============================
 # INTELLIGENCE EXTRACTION
@@ -89,116 +85,92 @@ def extract_intelligence(message: str):
     upi_ids = re.findall(r"\b[\w.-]+@[\w]+\b", message)
     urls = re.findall(r"https?://[^\s]+", message)
 
+    confidence = 0.0
+    if bank_accounts: confidence += 0.4
+    if upi_ids: confidence += 0.3
+    if urls: confidence += 0.3
+
     return {
-        "bankAccounts": bank_accounts,
-        "upiIds": upi_ids,
-        "phishingLinks": urls,
-        "phoneNumbers": [],
-        "suspiciousKeywords": []
+        "bank_accounts": bank_accounts,
+        "upi_ids": upi_ids,
+        "phishing_urls": urls,
+        "intelligence_confidence": round(min(confidence, 1.0), 2)
     }
 
 # =============================
-# FINAL CALLBACK TO GUVI
+# ROOT (OPTIONAL BUT GOOD)
 # =============================
-def send_final_callback(session_id, total_messages, intelligence, agent_notes):
-    payload = {
-        "sessionId": session_id,
-        "scamDetected": True,
-        "totalMessagesExchanged": total_messages,
-        "extractedIntelligence": intelligence,
-        "agentNotes": agent_notes
+@app.get("/")
+def root():
+    return {
+        "status": "Agentic Honey-Pot API is running",
+        "docs": "/docs",
+        "endpoint": "/scam"
     }
 
-    try:
-        requests.post(GUVI_CALLBACK_URL, json=payload, timeout=5)
-    except Exception:
-        pass  # Do NOT fail main API on callback error
-
 # =============================
-# MAIN API ENDPOINT (GUVI FORMAT)
+# MAIN API
 # =============================
 @app.post("/scam")
 def receive_scam(
-    data: dict,
+    data: ScamRequest,
     x_api_key: str = Header(None)
 ):
-    # --- Security ---
-    if x_api_key != API_KEY:
+    # --- API Key validation (SAFE) ---
+    if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
-    # --- INPUT ADAPTER ---
-    session_id = data.get("sessionId")
-    message_obj = data.get("message", {})
-    message_text = message_obj.get("text", "")
-    conversation_history = data.get("conversationHistory", [])
-
+    conversation_id = data.conversation_id
+    message = data.message
     now = datetime.utcnow()
 
-    # Init conversation
-    if session_id not in conversation_store:
-        conversation_store[session_id] = {
+    if conversation_id not in conversation_store:
+        conversation_store[conversation_id] = {
             "start_time": now,
             "messages": []
         }
 
-    convo = conversation_store[session_id]
+    convo = conversation_store[conversation_id]
 
     if len(convo["messages"]) >= MAX_TURNS:
         raise HTTPException(status_code=429, detail="Max conversation turns exceeded")
 
     convo["messages"].append({
         "role": "scammer",
-        "message": message_text,
+        "message": message,
         "time": now
     })
 
-    detection = detect_scam(message_text)
+    detection = detect_scam(message)
 
-    turns = len(convo["messages"])
-    duration = int((now - convo["start_time"]).total_seconds())
-
-    # --- DEFAULT RESPONSE ---
     response = {
-        "status": "success",
-        "scamDetected": detection["is_scam"],
-        "engagementMetrics": {
-            "engagementDurationSeconds": duration,
-            "totalMessagesExchanged": turns
+        "conversation_id": conversation_id,
+        "scam_detected": detection["is_scam"],
+        "scam_confidence": detection["confidence"],
+        "detection_reasons": detection["reasons"],
+        "engagement_metrics": {
+            "turns": len(convo["messages"]),
+            "engagement_duration_seconds": int(
+                (now - convo["start_time"]).total_seconds()
+            )
         },
-        "extractedIntelligence": {
-            "bankAccounts": [],
-            "upiIds": [],
-            "phishingLinks": []
-        },
-        "agentNotes": None
+        "agent_reply": None,
+        "extracted_intelligence": {
+            "bank_accounts": [],
+            "upi_ids": [],
+            "phishing_urls": [],
+            "intelligence_confidence": 0.0
+        }
     }
 
-    # --- AGENT HANDOFF ---
     if detection["is_scam"]:
-        reply = agent_reply(message_text, convo["messages"])
-
+        reply = agent_reply(message, convo["messages"])
         convo["messages"].append({
-            "role": "user",
+            "role": "agent",
             "message": reply,
             "time": datetime.utcnow()
         })
-
-        intelligence = extract_intelligence(message_text)
-        agent_notes = "Scammer used urgency tactics and payment redirection"
-
-        response["extractedIntelligence"] = {
-            "bankAccounts": intelligence["bankAccounts"],
-            "upiIds": intelligence["upiIds"],
-            "phishingLinks": intelligence["phishingLinks"]
-        }
-        response["agentNotes"] = agent_notes
-
-        # --- FINAL CALLBACK (MANDATORY) ---
-        send_final_callback(
-            session_id=session_id,
-            total_messages=len(convo["messages"]),
-            intelligence=intelligence,
-            agent_notes=agent_notes
-        )
+        response["agent_reply"] = reply
+        response["extracted_intelligence"] = extract_intelligence(message)
 
     return response
