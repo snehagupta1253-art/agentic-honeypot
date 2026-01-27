@@ -82,7 +82,7 @@ Content-Type: application/json
 }
 
 ```
-🔁 Sample Request – Format 2
+## 🔁 Sample Request – Format 2
 ```json
 {
   "sessionId": "elite-demo-001",
