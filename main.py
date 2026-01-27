@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import re
 from datetime import datetime
 import os
+import requests
 
 app = FastAPI(title="Agentic HoneyPot API", version="1.0")
 
@@ -13,7 +14,7 @@ API_KEY = os.getenv("API_KEY", "my-secret-key-123")
 MAX_TURNS = 20
 
 # =============================
-# REQUEST MODEL (IMPORTANT)
+# REQUEST MODEL
 # =============================
 class ScamRequest(BaseModel):
     conversation_id: str
@@ -86,9 +87,12 @@ def extract_intelligence(message: str):
     urls = re.findall(r"https?://[^\s]+", message)
 
     confidence = 0.0
-    if bank_accounts: confidence += 0.4
-    if upi_ids: confidence += 0.3
-    if urls: confidence += 0.3
+    if bank_accounts:
+        confidence += 0.4
+    if upi_ids:
+        confidence += 0.3
+    if urls:
+        confidence += 0.3
 
     return {
         "bank_accounts": bank_accounts,
@@ -98,7 +102,21 @@ def extract_intelligence(message: str):
     }
 
 # =============================
-# ROOT (OPTIONAL BUT GOOD)
+# GUVI CALLBACK (BACKGROUND)
+# =============================
+def send_guvi_callback(payload):
+    try:
+        requests.post(
+            "https://hackathon.guvi.in/api/updateHoneyPotFinalResult",
+            json=payload,
+            timeout=5
+        )
+    except Exception:
+        # Never block or crash main API
+        pass
+
+# =============================
+# ROOT ENDPOINT
 # =============================
 @app.get("/")
 def root():
@@ -114,9 +132,10 @@ def root():
 @app.post("/scam")
 def receive_scam(
     data: ScamRequest,
+    background_tasks: BackgroundTasks,
     x_api_key: str = Header(None)
 ):
-    # --- API Key validation (SAFE) ---
+    # API Key validation
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
@@ -135,6 +154,7 @@ def receive_scam(
     if len(convo["messages"]) >= MAX_TURNS:
         raise HTTPException(status_code=429, detail="Max conversation turns exceeded")
 
+    # Store scammer message
     convo["messages"].append({
         "role": "scammer",
         "message": message,
@@ -170,7 +190,20 @@ def receive_scam(
             "message": reply,
             "time": datetime.utcnow()
         })
+
         response["agent_reply"] = reply
         response["extracted_intelligence"] = extract_intelligence(message)
+
+        # GUVI callback payload
+        guvi_payload = {
+            "sessionId": conversation_id,
+            "scamDetected": True,
+            "totalMessagesExchanged": len(convo["messages"]),
+            "extractedIntelligence": response["extracted_intelligence"],
+            "agentNotes": reply
+        }
+
+        # Send callback in background (NON-BLOCKING)
+        background_tasks.add_task(send_guvi_callback, guvi_payload)
 
     return response
