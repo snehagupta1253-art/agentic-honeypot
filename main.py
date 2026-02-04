@@ -25,13 +25,14 @@ class ScamRequest(BaseModel):
 class GuviMessage(BaseModel):
     sender: str
     text: str
-    timestamp: Optional[str] = None
+    timestamp: Optional[int] = None
 
 
 class GuviRequest(BaseModel):
     sessionId: str
     message: GuviMessage
     conversationHistory: Optional[list] = []
+    metadata: Optional[dict] = {}
 
 # =============================
 # IN-MEMORY STORAGE
@@ -63,11 +64,9 @@ def detect_scam(message: str):
             score += weight
             reasons.append(word)
 
-    score = min(score, 1.0)
-
     return {
         "is_scam": score >= 0.3,
-        "confidence": round(score, 2),
+        "confidence": round(min(score, 1.0), 2),
         "reasons": reasons
     }
 
@@ -78,41 +77,16 @@ def agent_reply(message: str, history: list) -> str:
     msg = message.lower()
 
     if len(history) <= 1:
-        return "Hello, I just received this message. Can you explain what happened?"
+        return "Why is my account being suspended?"
 
-    if "account" in msg:
-        return "Which bank account is this related to?"
-    if "upi" in msg or "payment" in msg:
-        return "Please share the exact UPI ID."
-    if "link" in msg:
-        return "I am not comfortable clicking links. Is there another way?"
+    if "upi" in msg:
+        return "Please explain why UPI details are required."
     if "otp" in msg:
-        return "I received multiple OTPs. Which one do you need?"
+        return "I am not sure about sharing OTP. Can you clarify?"
+    if "link" in msg:
+        return "Is there any other way to verify?"
 
-    return "Please guide me step by step."
-
-# =============================
-# INTELLIGENCE EXTRACTION
-# =============================
-def extract_intelligence(message: str):
-    bank_accounts = re.findall(r"\b\d{9,18}\b", message)
-    upi_ids = re.findall(r"\b[\w.-]+@[\w]+\b", message)
-    urls = re.findall(r"https?://[^\s]+", message)
-
-    confidence = 0.0
-    if bank_accounts:
-        confidence += 0.4
-    if upi_ids:
-        confidence += 0.3
-    if urls:
-        confidence += 0.3
-
-    return {
-        "bank_accounts": bank_accounts,
-        "upi_ids": upi_ids,
-        "phishing_urls": urls,
-        "intelligence_confidence": round(min(confidence, 1.0), 2)
-    }
+    return "Please explain the issue clearly."
 
 # =============================
 # GUVI CALLBACK (BACKGROUND)
@@ -147,17 +121,19 @@ def receive_scam(
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(None)
 ):
-    # API key check
+    # API key validation
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
-    # Normalize input (supports both formats)
-    if hasattr(data, "conversation_id"):
+    # Normalize input
+    if isinstance(data, ScamRequest):
         conversation_id = data.conversation_id
         message_text = data.message
+        is_guvi = False
     else:
         conversation_id = data.sessionId
         message_text = data.message.text
+        is_guvi = True
 
     now = datetime.utcnow()
 
@@ -172,7 +148,7 @@ def receive_scam(
     if len(convo["messages"]) >= MAX_TURNS:
         raise HTTPException(status_code=429, detail="Max conversation turns exceeded")
 
-    # Add scammer message
+    # Store scammer message
     convo["messages"].append({
         "role": "scammer",
         "message": message_text,
@@ -180,49 +156,42 @@ def receive_scam(
     })
 
     detection = detect_scam(message_text)
+    reply = agent_reply(message_text, convo["messages"])
 
-    response = {
-        "conversation_id": conversation_id,
-        "scam_detected": detection["is_scam"],
-        "scam_confidence": detection["confidence"],
-        "detection_reasons": detection["reasons"],
-        "engagement_metrics": {
-            "turns": 0,  # will be updated later
-            "engagement_duration_seconds": int(
-                (now - convo["start_time"]).total_seconds()
-            )
-        },
-        "agent_reply": None,
-        "extracted_intelligence": {
-            "bank_accounts": [],
-            "upi_ids": [],
-            "phishing_urls": [],
-            "intelligence_confidence": 0.0
-        }
-    }
+    # Store agent reply
+    convo["messages"].append({
+        "role": "agent",
+        "message": reply,
+        "time": datetime.utcnow()
+    })
 
+    # GUVI callback (background, non-blocking)
     if detection["is_scam"]:
-        reply = agent_reply(message_text, convo["messages"])
-        convo["messages"].append({
-            "role": "agent",
-            "message": reply,
-            "time": datetime.utcnow()
-        })
-
-        response["agent_reply"] = reply
-        response["extracted_intelligence"] = extract_intelligence(message_text)
-
         guvi_payload = {
             "sessionId": conversation_id,
             "scamDetected": True,
             "totalMessagesExchanged": len(convo["messages"]),
-            "extractedIntelligence": response["extracted_intelligence"],
+            "extractedIntelligence": {},
             "agentNotes": reply
         }
-
         background_tasks.add_task(send_guvi_callback, guvi_payload)
 
-    # ✅ FINAL TURN COUNT (correct & clear)
-    response["engagement_metrics"]["turns"] = len(convo["messages"])
+    # ✅ GUVI TESTER EXPECTED RESPONSE
+    if is_guvi:
+        return {
+            "status": "success",
+            "reply": reply
+        }
 
-    return response
+    # Full response for normal API users
+    return {
+        "conversation_id": conversation_id,
+        "scam_detected": detection["is_scam"],
+        "agent_reply": reply,
+        "engagement_metrics": {
+            "turns": len(convo["messages"]),
+            "engagement_duration_seconds": int(
+                (now - convo["start_time"]).total_seconds()
+            )
+        }
+    }
